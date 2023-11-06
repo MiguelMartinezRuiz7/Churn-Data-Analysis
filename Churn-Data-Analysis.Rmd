@@ -1,0 +1,573 @@
+---
+title: "Customer Churn Data Analysis"
+author: "Miguel Martinez Ruiz"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+library(dplyr)
+library(stats)
+library(FactoMineR)
+library(factoextra)
+if(!require(C50)) install.packages('C50', repos='http://cran.us.r-project.org'); library(C50)
+library(randomForest)
+library(caret)
+if(!require("xgboost")) install.packages("xgboost"); library(xgboost)
+```
+
+The objective of this data analysis problem is to understand and predict customer churn at a particular telephone company. Customer churn can have a significant impact on a company's revenue and profitability, so it is crucial to identify patterns and factors that contribute to customer churn and take steps to avoid them in order to retain more customers.  
+
+Then, different algorithms/models can be tested to obtain good results (measured through various metrics) when predicting churn for new customers. Since there's no new data to test with, the dataset is divided into two different subsets: training and test. Model is trained with the training dataset and then its performance it's calculated with the test dataset.  
+  
+  
+  
+**Analytical objectives:** 
+
+1. Identify the most relevant factors that contribute to a customer's cancellation of service at a telephone company. 
+2. Evaluate the relationship between different variables (e.g., customer service calls, service usage, etc.) and service cancellation. 
+3. Discover patterns or trends in service cancellation and the circumstances surrounding them. 
+4. Provide recommendations to improve the customer experience and thereby reduce the cancellation rate.
+
+
+\newpage
+# 1. Choosing the data.
+
+These two are the selected datasets to work with:  
+- https://www.kaggle.com/datasets/barun2104/telecom-churn   
+- https://www.kaggle.com/datasets/becksddf/churn-in-telecoms-dataset   
+They have information in common (same amount of rows), so they probably have been extracted from an original dataset, so we can put them together in a single dataframe for better analysis.
+
+
+\newpage
+# 2. Load and prepare data for an exploratory analysis.   
+
+First step is reading the .CSV files containing the data and merging the information considered relevant into a single dataframe, then briefly explain the data facts.
+
+```{r}
+# Read both .CSV files containing data:
+churnData1 <- read.csv("telecom_churn.csv", row.names=NULL)
+churnData2 <- read.csv("bigml.csv", row.names=NULL)
+
+# Merge the information from both dataframes into one::
+churnData <- bind_cols(churnData1, churnData2)
+
+# Keep the data considered interesting from the unified dataframe
+# (some columns that are repeated are eliminated):
+
+churnData <- select(churnData, -account.length, -area.code, -voice.mail.plan, 
+                    -number.vmail.messages, -total.day.minutes, -total.day.calls, 
+                    -total.day.charge, -total.eve.minutes, - total.eve.calls, 
+                    -total.eve.charge,-total.night.minutes, -total.night.calls, 
+                    -total.night.charge, -customer.service.calls, -churn)
+
+# Rename the columns so that they all follow the same format:
+churnData <- churnData %>%
+  rename("PhoneNumber" = "phone.number",
+         "State" = "state", 
+         "InternationalPlan" = "international.plan", 
+         "InternationalCalls" = "total.intl.calls",
+         "InternationalMins" = "total.intl.minutes",
+         "InternationalCharge" = "total.intl.charge")
+
+# Change the content of the InternationalPlan variable from "yes" or "no" 
+# to "1" and "0" to operate as a categorical numeric variable:
+churnData$InternationalPlan <- ifelse(churnData$InternationalPlan == "yes", 1, 0)
+
+# Sort the dataframe for easier subsequent operations::
+new_order <- c("PhoneNumber", "Churn", "AccountWeeks", "ContractRenewal", "DataPlan", 
+                 "DataUsage", "CustServCalls", "DayMins", "DayCalls", "MonthlyCharge", 
+                 "OverageFee", "RoamMins", "InternationalCalls", "InternationalPlan", 
+                 "InternationalMins", "InternationalCharge", "State")
+
+# Rearrange columns according to new order:
+churnData_ordered <- churnData[new_order]
+
+# Show re-ordered dataframe structure:
+str(churnData_ordered)
+```
+
+\newpage
+# 3. Exploratory analysis of the selected dataset.
+
+There are 17 facts or variables and 3333 observations.  
+Describe and analyze most relevant variables to get a first impression of how they could potentially affect churn:  
+
+- *PhoneNumber*: identifies each customer.  
+
+- *Churn*: indicates whether the customer has cancelled the service (1) or not (0) (binary variable).  
+
+- *AccountWeeks*: number of weeks that the customer has had an active account (numeric variable).   
+If a customer has had an active account for a longer period of time, they may have developed greater loyalty to the supplier. We assume that these customers are less likely to churn than new customers.  
+
+- *ContractRenewal*: indicates whether the customer has recently renewed the contract (binary variable).  
+If a customer has recently renewed his contract, it indicates that he has decided to continue with the service. This could suggest higher satisfaction and commitment, which reduces the likelihood of churn.  
+
+- *DataPlan*: indicates whether the customer has a data plan (binary variable).  
+
+- *DataUsage*:  number of gigabytes of monthly usage (numerical variable).  
+
+- *CustServCalls*: number of calls to customer service (numeric variable).   
+A higher number of calls to customer service could indicate dissatisfaction or recurring problems with the service. This could increase the likelihood of churn.
+
+- *DayMins*: average minutes of daily use per month (numerical variable).  
+If a customer uses many minutes per day, they may be highly dependent on the service and more sensitive to a bad experience or service limitations. This could influence their decision to unsubscribe.  
+
+- *DayCalls*: average number of calls per month (numeric variable (numeric variable).  
+Same process as the previous variable.
+
+- *MonthlyCharge*: average monthly bill cost (numerical variable).   
+A higher monthly cost may be a relevant factor in a customer's decision to unsubscribe. If the customer finds that the cost is not justified in comparison with the quality of service or competitive offers, he/she may choose to cancel the service.   
+
+- *OverageFee*: highest overage fee in the last 12 months (numerical variable).   
+If a customer has experienced overage fees in the last 12 months, this may indicate a lack of control over consumption or inadequate restrictions in the plan. This could negatively affect satisfaction and increase the likelihood of cancellation.  
+
+- *RoamMins*: average number of roaming minutes (numerical variable).  
+
+- *InternationalCalls*: number of international calls per month (numerical variable).  
+
+- *InternationalPlan*: indicates whether the customer has an international calling plan (binary variable).  
+
+- *InternationalMins*: average minutes of international calls per month (numerical variable).  
+
+- *InternationalCharge*: average cost of the portion corresponding to international use (numerical variable).   
+The high cost of international calls may lead a user to decide to cancel the service, thinking that he has not been informed of the high cost of making this kind of calls.  
+
+- *State*: U.S. state to which the customer belongs (categorical variable).  
+
+Now, let's see a statistical summary of the dataframe:
+
+```{r}
+summ = summary(churnData)
+summ
+```
+
+This is a first approach of the data contained in the different variables.
+
+Now, let's look at the distribution of the main variables:
+
+```{r}
+# Obtain the number of variables in the dataframe:
+num_variables <- ncol(churnData_ordered)
+
+# Configure the histogram layout design:
+par(mfrow = c(4, 4))
+par(mar = c(3, 2, 2, 2)) # Adjust the margins
+
+# Iterate over the first variables and display the histograms:
+for (i in 2:(num_variables-1)) {
+  hist(churnData_ordered[, i], main = colnames(churnData_ordered)[i])
+}
+
+# Show bar chart for categorical variables:
+barplot(table(churnData_ordered[, num_variables]), 
+        main = colnames(churnData_ordered)[num_variables])
+```
+
+From this overview of the distribution of the variables, some conclusions prior to analysis can be drawn:
+- Variables AccountWeeks, DayMins, DayCalls, MonthlyCharge (approximately), OverageFee and RoamMins follow a normal distribution.  
+- The records are quite evenly distributed among the states in the country.  
+- We have significantly more records of people who remain with the company versus those who have cut service.   
+- Most people have recently renewed their service contract.   
+- There are more people without a data plan than with one.   
+- Very few people have an international plan.
+
+Calculating the exact numbers, we can see that:
+```{r}
+# Distribution of customer churn::
+table(churnData$Churn)
+
+# Distribution of contract renewal:
+table(churnData$ContractRenewal)
+
+# Data plan distribution:
+table(churnData$DataPlan)
+
+# International plan distribution:
+table(churnData$InternationalPlan)
+```
+
+There are 2850 records of people who remain with the company versus 483 who have cut service.   
+There are 323 records of people who have not renewed their contract versus 3010 who have.  
+There are 2411 people who do not have a data plan versus 922 who do.   
+There are 3010 people who do not have an international plan versus 323 who do.  
+
+Now, it's time to check correlations between variables.
+
+```{r message= FALSE, warning=FALSE}
+if(!require("corrplot")) install.packages("corrplot"); library("corrplot")
+# Select numeric variables:
+n <- c("Churn", "AccountWeeks", "ContractRenewal", "DataPlan", "DataUsage", 
+       "CustServCalls", "DayMins", "DayCalls", "MonthlyCharge", "OverageFee", 
+       "RoamMins", "InternationalCalls", "InternationalPlan", "InternationalPlan", 
+       "InternationalCharge", "InternationalMins")
+variables_num = churnData %>% select(all_of(n))
+
+# Calculate correlation matrix:
+correlacionMatrix <- cor(variables_num)
+
+corrplot(correlacionMatrix,method="color",tl.col="black", tl.srt=30, order = "AOE",
+number.cex=0.75,sig.level = 0.01, addCoef.col = "black")
+```
+
+At a glance we can see that the variables with the highest correlation with *Churn* are CustServCalls, ContractRenewal, DayMins and InternationalPlan, but there aren't really high values.
+
+We also observe a perfectly inverse linear relationship between InternationalPlan and ContractRenewal. Assuming the veracity of our data, this would imply that each person who contracts an international plan does not renew the contract, which would show dissatisfaction with the international plan on the part of its users.
+
+On the other hand, we can see a clear relationship between DataUsage and MonthlyCharge and the existence of a DataPlan. It is logical to think that the users who use more mobile data are those who have a contracted data plan, and that this entails an extra cost in their monthly bill.
+
+There is also a certain relationship between Monthly Charge and Daymins, i.e., it is logical to think that a higher number of minutes spoken results in a higher cost.
+
+
+Next, we are going to analyze the existence of outliers in our data, and see if we have to deal with them and the conclusions they bring us.
+
+```{r}
+# We store the numeric variables in a new dataframe and operate with it:
+churnData_num <- select(churnData, -Churn, -ContractRenewal, -DataPlan, 
+                        -CustServCalls, -State, -PhoneNumber, -InternationalPlan)
+
+# Get the number of variables in the dataframe:
+num_variables <- ncol(churnData_num)
+
+# Set up the histograms layout design:
+par(mfrow = c(3, 4))
+par(mar = c(1, 1, 2, 1)) # Ajustamos los márgenes
+
+# Iterate over the first variables and show histograms:
+for (i in 1:(num_variables-1)) {
+  boxplot(churnData_num[, i], main = colnames(churnData_num)[i])
+}
+```
+
+Check outliers with interquartile range method.
+Create a variable that storages summary of the dataframe to obtain quartiles of the variables:
+
+```{r}
+summ_num = summary(churnData_num)
+summ_num
+```
+
+```{r}
+# Create an empty list to store found outliers:
+outliers <- list()
+
+# Create a list to store column names:
+column_names <- vector("character", ncol(churnData_num))
+
+# Iterate through columns:
+for (i in 1:ncol(churnData_num)){
+  # Save the name of the current column:
+  column_names[i] <- colnames(churnData_num)[i]
+  
+  # Calculate interquartile range (Q3 - Q1):
+  q3 <- as.numeric(sub("3rd Qu.:", "", summ_num[5,i]))
+  q1 <- as.numeric(sub("1st Qu.:", "", summ_num[2,i]))
+  
+  # Calculate thresholds:
+  umbral_inferior <- q1 - ((q3-q1)*1.5)
+  umbral_superior <- q3 + ((q3-q1)*1.5)
+  
+  # Select the values in each column that are considered outliers:
+  outliers_columna <- subset(churnData_num, churnData_num >= umbral_superior 
+                             & churnData_num[[i]] <= umbral_inferior)[[i]]
+  
+  # Clean possible NA values:
+  outliers_columna <- subset(outliers_columna, complete.cases(outliers_columna))
+  
+  # Save outliers on the list:
+  outliers[[i]] <- outliers_columna
+}
+
+# Only show columns with outliers:
+for (i in 1:ncol(churnData_num)) {
+  if (length(outliers[[i]]) > 0) {
+    cat("Column", column_names[i], "outliers:", outliers[[i]], "\n")
+  }
+}
+```
+
+\newpage
+# 4. Cleaning data.
+
+Structure of the dataset.
+
+```{r}
+str(churnData)
+```
+
+Check if duplicate records exist.
+For this purpose, check through PhoneNumber if there are repeated numbers, and compare to the total amount of records.
+
+```{r}
+if (nrow(churnData) != length(unique(churnData$PhoneNumber))) {
+  cat("There are repeated values in the column PhoneNumber.")
+} else {
+  cat("There are not repeated values in the column PhoneNumber.")
+}
+```
+
+Check if any variable contains null values:
+
+```{r}
+sapply(churnData,function(x)(sum(is.na(x))))
+```
+
+No null values in any column.
+
+Check missing values:
+
+```{r}
+print(all(complete.cases(churnData)))
+```
+
+No missing values in the dataset.
+
+State (categorical variable)  can be encoded numerically for later use in modeling algorithms.
+
+```{r}
+# Encode variable State:
+churnData <- churnData %>% 
+  mutate(State = recode(State, "KS" = "1", "OH" = "2", "NJ" = "3", "OK" = "4", 
+                               "AL" = "5", "MA" = "6", "MO" = "7", "LA" = "8", 
+                               "WV" = "9", "IN" = "10", "RI" = "11", "IA" = "12", 
+                               "MT" = "13", "NY" = "14", "ID" = "15", "VT" = "16", 
+                               "VA" = "17", "TX" = "18", "FL" = "19", "CO" = "20", 
+                               "AZ" = "21", "SC" = "22", "NE" = "23", "WY" = "24", 
+                               "HI" = "25", "IL" = "26", "NH" = "27", "GA" = "28", 
+                               "AK" = "29", "MD" = "30", "AR" = "31", "WI" = "32", 
+                               "OR" = "33", "MI" = "34", "DE" = "35", "UT" = "36", 
+                               "CA" = "37", "MN" = "38", "SD" = "39", "NC" = "40", 
+                               "WA" = "41", "NM" = "42", "NV" = "43", "DC" = "44", 
+                               "KY" = "45", "ME" = "46", "MS" = "47", "TN" = "48", 
+                               "PA" = "49", "CT" = "50", "ND" = "51"))
+```
+
+
+\newpage
+# 5. Discretize variables:
+
+Add a new column to the dataset to differentiate the types of customers according to the MonthlyCharge, i.e., the cost of their monthly bill, since, for the commercial interests of the company, it is not as important to cut the service for a person who incurs very high monthly expenses as for another person whose expenses are much lower.
+
+```{r}
+  summary(churnData[,"MonthlyCharge"])
+```
+
+Discretize into intervals using the quartile values.
+
+```{r}
+churnData["BillCharge"] <- cut(churnData$MonthlyCharge, 
+                               breaks = c(14, 45, 53.5, 66.2, 111.30), 
+                               labels = c("Low price", "Medium price", 
+                                          "High price", "Very high price"))
+
+# Check changes made in the dataset:
+head(churnData)
+```
+
+\newpage
+# 6. Supervised models:
+
+## 6.1 Decission trees (C5.0):
+
+Remove the variables from the analysis that do not provide relevant information or that have a high level of correlation with other variables already included:
+
+```{r}
+# Save the name of the variables we are going to use:
+columns_to_add <- c("Churn", "AccountWeeks", "ContractRenewal","DataPlan", 
+                    "CustServCalls", "DayMins", "DayCalls", "MonthlyCharge",
+                    "OverageFee", "RoamMins", "InternationalCalls")
+
+# Save the variables into a dataset:
+churnData_tree <- subset(churnData, select = columns_to_add)
+
+# Change the predicted variable into factor type:
+churnData_tree$Churn <- as.factor(churnData_tree$Churn)
+
+str(churnData_tree)
+```
+
+Establish training and test sets, assigning 80% and 20% of the data respectively. This way, dataset for training and dataset for validation are separated from each other.
+
+```{r}
+set.seed(123)
+y <- churnData_tree[,1] 
+X <- churnData_tree[,2:11] 
+```
+
+Define a way to separate the data in the sets according to the parameter train_prop: 
+```{r}
+train_prop <- 0.8
+n <- nrow(churnData_tree)
+train_size <- floor(train_prop * n)
+indexes <- sample(1:n, size = train_size)
+trainX<-X[indexes,]
+trainY<-y[indexes]
+testX<-X[-indexes,]
+testY<-y[-indexes]
+```
+
+Create the decision tree using traning dataset:
+```{r}
+modelc5.0_reglas <- C50::C5.0(trainX, trainY,rules=TRUE)
+modelc5.0 <- C50::C5.0(trainX, trainY)
+summary(modelc5.0_reglas)
+```
+
+Perform a prediction of the target variable for the test dataset:
+```{r}
+predicted_model_c5.0 <- predict(modelc5.0, testX, type="class")
+```
+
+Obtain confusion matrix::
+```{r}
+mat_conf_c5.0<-table(Real=testY,Predicted=predicted_model_c5.0)
+mat_conf_c5.0
+```
+VN = 559, VP = 69, FP = 10, FN = 29  
+
+Information from the confusion matrix:
+```{r}
+TN <- mat_conf_c5.0[1, 1]
+FP <- mat_conf_c5.0[1, 2]
+TP <- mat_conf_c5.0[2, 2]
+FN <- mat_conf_c5.0[2, 1]
+
+precision_c5.0 <- round(100*(TP + TN) / (TN + TP + FP + FN), 2)
+sensitivity_c5.0 <- round(100*TP / (TP + FN), 2)
+specificity_c5.0 <- round(100*TN / (TN + FP), 2)
+error_rate_c5.0 <- round(100*mean(predicted_model_c5.0 != testY), 2)
+
+cat("C5.0 precision:", precision_c5.0, "%\n")
+cat("C5.0 sensitivity:", sensitivity_c5.0, "%\n")
+cat("C5.0 specificity:", specificity_c5.0, "%\n")
+cat("C5.0 error rate:", error_rate_c5.0, "%")
+```
+
+The model has a good accuracy level. In addition, it is very good at correctly identifying the negative class (98% specificity), i.e. those customers who do not cut off their service, but performs worse when identifying the positive class (70% sensitivity), i.e. those customers who do cut off their service.
+
+From the rules of the model, we can draw important conclusions for decision making in the company:  
+
+- Customers who make more than 3 calls to customer service tend to cancel the service (rules 4, 7, 8, 10, 11, 14). It will therefore be important to improve this service, so that the customer is satisfied with the service received.  
+- Customers who have a contract renewal have a clear tendency not to cancel the service, and vice versa (rules 1, 5, 6, 11), therefore, we can focus on marketing campaigns that encourage the creation of contracts of potential customers.  
+- When roaming minutes are introduced (rules 6 and 9), customers tend to cut the service. This could be solved by informing them of the possible international plans available to them, so that they do not incur extra costs when traveling abroad.
+
+There are also good news:  
+
+- The majority of customers who have a data plan do not cancel the service, it seems that a good service is being provided in this regard.  
+
+Now that we have a plan to improve the churn rate, we will test different algorithms to improve the ability to predict the churn variable through the rest of the variables.
+
+\newpage
+### 6.1.1 C5.0 with adaptative boosting:
+
+Try to improve c5.0 performance implementing "adaptative boosting".
+```{r}
+modelc5.0_boost <- C50::C5.0(trainX, trainY, trials = 100)
+predicted_model_c5.0_boost <- predict(modelc5.0_boost, testX, type="class")
+
+mat_conf_c5.0_boost<-table(testY,Predicted=predicted_model_c5.0_boost)
+TN_b <- mat_conf_c5.0_boost[1, 1]
+TP_b <- mat_conf_c5.0_boost[2, 2]
+FP_b <- mat_conf_c5.0_boost[1, 2]
+FN_b <- mat_conf_c5.0_boost[2, 1]
+
+precision_c5.0_boost <- round(100*(TP_b + TN_b) / (TN_b + TP_b + FP_b + FN_b), 2)
+sensitivity_c5.0_boost <- round(100*TP_b / (TP_b + FN_b), 2)
+specificity_c5.0_boost <- round(100*TN_b / (TN_b + FP_b), 2)
+error_rate_c5.0_boost <- round(100*mean(predicted_model_c5.0_boost != testY), 2)
+
+cat("C5.0 with boost precision:", precision_c5.0_boost, "%\n")
+cat("C5.0 with boost sensitivity:", sensitivity_c5.0_boost, "%\n")
+cat("C5.0 with boost specificity:", specificity_c5.0_boost, "%\n")
+cat("C5.0 with boost error:", error_rate_c5.0_boost, "%")
+```
+
+All metrics of the model improve when using boosting option.
+
+\newpage
+## 6.2 Random Forest:
+
+Use randomForest algorithm to sort the records according to the variable "Churn"
+As in the previous section with C5.0 modelo, there's a separation of the data into training and test sets.
+
+Create the decision tree using training data: 
+```{r}
+# Use the created indexes in the previous section for the training and test sets.
+train_RF<-churnData_tree[indexes,]
+test_RF<-churnData_tree[-indexes,]
+
+# Create the Random Forest model with the training data.:
+model_RF <- randomForest(Churn ~ ., data = train_RF, ntree = 100)
+
+# Make predictions with test dat:
+predictions_RF <- predict(model_RF, test_RF, type="class")
+
+# Calculate confusion matrix:
+confusion_RF <- confusionMatrix(predictions_RF, test_RF$Churn)
+
+# Show confusion matrix:
+print(confusion_RF$table)
+```
+
+```{r}
+TN_RF <- confusion_RF$table[1, 1]
+FP_RF <- confusion_RF$table[2, 1]
+TP_RF <- confusion_RF$table[2, 2]
+FN_RF <- confusion_RF$table[1, 2]
+
+precision_RF <- round(100*(TP_RF + TN_RF) / (TN_RF + TP_RF + FP_RF + FN_RF), 2)
+sensitivity_RF <- round(100*TP_RF / (TP_RF + FN_RF), 2)
+specificity_RF <- round(100*TN_RF / (TN_RF + FP_RF), 2)
+error_rate_RF <- round(100*mean(predictions_RF != testY), 2)
+
+cat("Random Forest model precision:", precision_RF, "%\n")
+cat("Random Forest model sensitivity:", sensitivity_RF, "%\n")
+cat("Random Forest model specificity:", specificity_RF, "%\n")
+cat("Random Forest model error:" ,error_rate_RF, "%")
+```
+
+The RandomForest model metrics are the best obtained so far. 
+This is because Random Forest generates multiple decision trees that are combined to obtain a single, more robust model, whereas the previously developed C5.0 algorithm only builds one decision tree.
+
+
+\newpage
+## 6.3 Regression model:
+
+```{r}
+# Create the logistic regression model:
+regression_model <- glm(Churn ~ ., data = train_RF, family = "binomial")
+
+predictions_glm <- predict(regression_model, newdata = test_RF, type = "response")
+
+predicted_glm <- ifelse(predictions_glm > 0.5, 1, 0)
+
+confusion_matrix_glm <- table(Real = testY, Predicted = predicted_glm)
+
+# Show confusion matrix:
+confusion_matrix_glm
+```
+
+```{r}
+TN_glm <- confusion_matrix_glm[1, 1]  # True negatives
+TP_glm <- confusion_matrix_glm[2, 2]  # True positives
+FP_glm <- confusion_matrix_glm[1, 2]  # False positives
+FN_glm <- confusion_matrix_glm[2, 1]  # False negatives
+
+precision_glm <- round(100*(TP_glm + TN_glm) / (TN_glm + TP_glm + FP_glm + FN_glm), 2)
+sensitivity_glm <- round(100*TP_glm / (TP_glm + FN_glm), 2)
+specificity_glm <- round(100*TN_glm / (TN_glm + FP_glm), 2)
+error_rate_glm <- round(100*mean(predicted_glm != testY), 2)
+
+cat("Regression model precision:", precision_glm, "%\n")
+cat("Regression model sensitivity:", sensitivity_glm, "%\n")
+cat("Regression model specificity:", specificity_glm, "%\n")
+cat("Regression model error rate:", error_rate_glm, "%\n")
+```
+
+Worse results were obtained with the linear regression model than with the RandomForest algorithm.
+
+In future versions of this project, more models, or even combinations of models, could be implemented to improve the ability to predict customer churn.
+
